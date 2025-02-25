@@ -1,0 +1,164 @@
+name: Build and upload assets
+on:
+  release:
+    types: [ published ]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: ubuntu-20.04
+          TARGET: linux-gnu/amd64
+        - os: ubuntu-latest
+          TARGET: linux-musl/amd64
+        - os: ubuntu-latest
+          TARGET: linux-gnu/aarch64
+        - os: ubuntu-latest
+          TARGET: android/aarch64
+        - os: windows-latest
+          TARGET: windows-msvc/amd64
+        - os: macos-latest
+          TARGET: macos/amd64
+        - os: macos-latest
+          TARGET: macos/aarch64
+    name: Build on ${{ matrix.TARGET }}
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protoc
+        uses: taiki-e/install-action@v2
+        with:
+          tool: protoc
+
+      - name: Create bin directory
+        run: mkdir bin
+
+      - name: Build on Linux GNU
+        if: matrix.TARGET == 'linux-gnu/amd64'
+        run: |
+          rustup target add x86_64-unknown-linux-gnu
+          cargo build --target=x86_64-unknown-linux-gnu --release
+          archive="bin/spectre-miner-${{ github.event.release.tag_name }}-linux-gnu-amd64.zip"
+          asset_name="spectre-miner-${{ github.event.release.tag_name }}-linux-gnu-amd64"
+          strip ./target/x86_64-unknown-linux-gnu/release/spectre-miner
+          mv ./target/x86_64-unknown-linux-gnu/release/spectre-miner ./bin/${asset_name}
+          zip -r "${archive}" ./bin/${asset_name}
+
+          # HiveOS.
+          hiveos_asset_name="spectre-miner-${{ github.event.release.tag_name }}_hiveos"
+          hiveos_archive="bin/${hiveos_asset_name}.tar.gz"
+          cp -r ./hive-os ./bin/spectre-miner
+          cp ./bin/${asset_name} ./bin/spectre-miner/spectre-miner
+          sed 's/^ver="custom"/ver="${{ github.event.release.tag_name }}"/g' -i ./bin/spectre-miner/h-stats.sh
+          tar -czvf "${hiveos_archive}" -C ./bin spectre-miner
+          rm -r ./bin/spectre-miner
+
+          # mmpOS.
+          mmpos_asset_name="spectre-miner-${{ github.event.release.tag_name }}_mmpos"
+          mmpos_archive="bin/${mmpos_asset_name}.tar.gz"
+          cp -r ./mmpos ./bin/spectre-miner
+          cp ./bin/${asset_name} ./bin/spectre-miner/spectre-miner
+          sed 's/^ver="custom"/ver="${{ github.event.release.tag_name }}"/g' -i ./bin/spectre-miner/mmp-external.conf
+          tar -czvf "${mmpos_archive}" -C ./bin spectre-miner
+          rm -r ./bin/spectre-miner
+
+          # Cleanup.
+          rm ./bin/${asset_name}
+
+      - name: Build on Linux musl
+        if: matrix.TARGET == 'linux-musl/amd64'
+        run: |
+          sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --target=x86_64-unknown-linux-musl --release
+          archive="bin/spectre-miner-${{ github.event.release.tag_name }}-linux-musl-amd64.zip"
+          asset_name="spectre-miner-${{ github.event.release.tag_name }}-linux-musl-amd64"
+          strip ./target/x86_64-unknown-linux-musl/release/spectre-miner
+          mv ./target/x86_64-unknown-linux-musl/release/spectre-miner ./bin/${asset_name}
+          zip -r "${archive}" ./bin/${asset_name}
+          rm ./bin/${asset_name}
+
+      - name: Build on Linux for linux-gnu/aarch64
+        if: matrix.TARGET == 'linux-gnu/aarch64'
+        env:
+          TARGET_CC: aarch64-linux-gnu-gcc
+          TARGET_CXX: aarch64-linux-gnu-g++
+          RUSTFLAGS: -C linker=aarch64-linux-gnu-gcc
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          rustup target add aarch64-unknown-linux-gnu
+          cargo build --target=aarch64-unknown-linux-gnu --release
+          archive="bin/spectre-miner-${{ github.event.release.tag_name }}-linux-gnu-arm64.zip"
+          asset_name="spectre-miner-${{ github.event.release.tag_name }}-linux-gnu-arm64"
+          mv ./target/aarch64-unknown-linux-gnu/release/spectre-miner ./bin/${asset_name}
+          zip -r "${archive}" ./bin/${asset_name}
+          rm ./bin/${asset_name}
+
+      - name: Build for Android ARM64
+        if: matrix.TARGET == 'android/aarch64'
+        env:
+          TARGET_CC: aarch64-linux-android21-clang
+          TARGET_CXX: aarch64-linux-android21-clang++
+          RUSTFLAGS: -C linker=aarch64-linux-android21-clang
+        run: |
+          curl -sSL https://dl.google.com/android/repository/android-ndk-r27c-linux.zip -o android-ndk.zip
+          unzip android-ndk.zip -d $HOME
+          export ANDROID_NDK_HOME=$HOME/android-ndk-r27c
+          export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+
+          rustup target add aarch64-linux-android
+          cargo build --target=aarch64-linux-android --release
+
+          archive="bin/spectre-miner-${{ github.event.release.tag_name }}-android-arm64.zip"
+          asset_name="spectre-miner-${{ github.event.release.tag_name }}-android-arm64"
+          mv ./target/aarch64-linux-android/release/spectre-miner ./bin/${asset_name}
+          zip -r "${archive}" ./bin/${asset_name}
+          rm ./bin/${asset_name}
+
+      - name: Build on Windows
+        if: matrix.TARGET == 'windows-msvc/amd64'
+        shell: bash
+        run: |
+          rustup target add x86_64-pc-windows-msvc
+          cargo build --target=x86_64-pc-windows-msvc --release
+          archive="bin/spectre-miner-${{ github.event.release.tag_name }}-win64-amd64.zip"
+          asset_name="spectre-miner-${{ github.event.release.tag_name }}-win64-amd64.exe"
+          mv ./target/x86_64-pc-windows-msvc/release/spectre-miner.exe ./bin/${asset_name}
+          7z a -tzip -r "${archive}" bin/${asset_name}
+          rm ./bin/${asset_name}
+
+      - name: Build on MacOS for x86_64
+        if: matrix.TARGET == 'macos/amd64'
+        run: |
+          rustup target add x86_64-apple-darwin
+          cargo build --target=x86_64-apple-darwin --release
+          archive="bin/spectre-miner-${{ github.event.release.tag_name }}-osx-amd64.zip"
+          asset_name="spectre-miner-${{ github.event.release.tag_name }}-osx-amd64"
+          mv ./target/x86_64-apple-darwin/release/spectre-miner ./bin/${asset_name}
+          zip -r "${archive}" ./bin/${asset_name}
+          rm ./bin/${asset_name}
+
+      - name: Build on MacOS for M1/2
+        if: matrix.TARGET == 'macos/aarch64'
+        run: |
+          rustup target add aarch64-apple-darwin
+          cargo build --target=aarch64-apple-darwin --release
+          archive="bin/spectre-miner-${{ github.event.release.tag_name }}-osx-aarch64.zip"
+          asset_name="spectre-miner-${{ github.event.release.tag_name }}-osx-aarch64"
+          mv ./target/aarch64-apple-darwin/release/spectre-miner ./bin/${asset_name}
+          zip -r "${archive}" ./bin/${asset_name}
+          rm ./bin/${asset_name}
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bin/*.zip
+            bin/*.tar.gz
