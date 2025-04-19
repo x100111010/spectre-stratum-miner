@@ -47,8 +47,6 @@ pub struct ShareStats {
     pub shares_pending: Mutex<HashMap<u32, String>>,
 }
 
-static mut SHARE_STATS: Option<Arc<ShareStats>> = None;
-
 impl Display for ShareStats {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -180,6 +178,7 @@ impl StratumHandler {
         miner_address: String,
         mine_when_not_synced: bool,
         block_template_ctr: Option<Arc<AtomicU16>>,
+        share_stats: Arc<ShareStats>,
     ) -> Result<Box<Self>, Error> {
         info!("Connecting to {}", address);
         let socket = TcpStream::connect(address).await?;
@@ -189,21 +188,15 @@ impl StratumHandler {
         let (sink, stream) = client.split();
         tokio::spawn(async move { ReceiverStream::new(recv).map(Ok).forward(sink).await });
 
-        let share_state = unsafe {
-            if SHARE_STATS.is_none() {
-                SHARE_STATS = Some(Arc::new(ShareStats::default()));
-            }
-            SHARE_STATS.clone().unwrap()
-        };
         let last_stratum_id = Arc::new(AtomicU32::new(0));
         let (block_channel, block_handle) = Self::create_block_channel(
             send_channel.clone(),
             miner_address.clone(),
             last_stratum_id.clone(),
-            share_state.clone(),
+            share_stats.clone(),
         );
         Ok(Box::new(Self {
-            log_handler: task::spawn(Self::log_shares(share_state.clone())),
+            log_handler: task::spawn(Self::log_shares(share_stats.clone())),
             stream: Box::pin(stream),
             send_channel,
             miner_address,
@@ -218,7 +211,7 @@ impl StratumHandler {
             nonce_fixed: 0,
             extranonce: None,
             last_stratum_id,
-            shares_stats: share_state,
+            shares_stats: share_stats,
             mining_dev: None,
             block_channel,
             block_handle,
@@ -270,67 +263,66 @@ impl StratumHandler {
 
     async fn handle_message(&mut self, msg: StratumLine, miner: &mut MinerManager) -> Result<(), Error> {
         match msg.clone() {
-            StratumLine { id, payload, error: None, .. } => {
-                match payload {
-                    StratumLinePayload::StratumResult { result } if id.is_some() => {
-                        match result {
-                            StratumResult::Plain(Some(true)) | StratumResult::Eth((true, _)) => {
-                                if let Some(_jobid) = self
-                                    .shares_stats
-                                    .shares_pending
-                                    .try_lock()
-                                    .unwrap()
-                                    .remove(&id.expect("We checked id is not none"))
-                                {
-                                    self.shares_stats.accepted.fetch_add(1, Ordering::SeqCst);
-                                    info!("Share accepted");
-                                } else {
-                                    info!("{:?} (Last: {})", msg.clone(), self.last_stratum_id.load(Ordering::SeqCst));
-                                    warn!("Ignoring result for now");
-                                }
-                                Ok(())
-                            }
-                            StratumResult::Subscribe((ref _subscriptions, ref extranonce, ref nonce_size)) => {
-                                self.set_extranonce(extranonce.as_str(), nonce_size)
-                                /*for (name, value) in _subscriptions {
-                                    match name.as_str() {
-                                        "mining.set_difficulty" => {self.set_difficulty(&f32::from_str(value.as_str())?)?;},
-                                        _ => {warn!("Ignored {} (={})", name, value);}
-                                    }
-                                }
-                                Ok(())*/
-                            }
-                            _ => Err(format!("Inconsistent stratum message: {:?}", msg).into()),
+            StratumLine { id, payload, error: None, .. } => match payload {
+                StratumLinePayload::StratumResult { result } if id.is_some() => match result {
+                    StratumResult::Plain(Some(true)) | StratumResult::Eth((true, _)) => {
+                        if let Some(_jobid) = self
+                            .shares_stats
+                            .shares_pending
+                            .try_lock()
+                            .unwrap()
+                            .remove(&id.expect("We checked id is not none"))
+                        {
+                            self.shares_stats.accepted.fetch_add(1, Ordering::SeqCst);
+                            info!("Share accepted");
+                        } else {
+                            info!("{:?} (Last: {})", msg.clone(), self.last_stratum_id.load(Ordering::SeqCst));
+                            warn!("Ignoring result for now");
                         }
+                        Ok(())
                     }
-                    StratumLinePayload::StratumCommand(command) => match command {
-                        StratumCommand::SetExtranonce(SetExtranonce::SetExtranoncePlain((
-                            ref extranonce,
-                            ref nonce_size,
-                        ))) => self.set_extranonce(extranonce.as_str(), nonce_size),
-                        StratumCommand::MiningSetDifficulty((ref difficulty,)) => self.set_difficulty(difficulty),
-                        StratumCommand::MiningNotify(MiningNotify::MiningNotifyShort((id, header_hash, timestamp))) => {
-                            self.block_template_ctr
-                                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| Some((v + 1) % 10_000))
-                                .unwrap();
-                            miner
-                                .process_block(Some(PartialBlock {
-                                    id,
-                                    header_hash,
-                                    timestamp,
-                                    nonce: 0,
-                                    target: self.target_pool,
-                                    nonce_mask: self.nonce_mask,
-                                    nonce_fixed: self.nonce_fixed,
-                                    hash: None,
-                                }))
-                                .await
-                        }
-                        _ => Err(format!("Unexpected stratum message: {:?}", msg).into()),
-                    },
+                    StratumResult::Subscribe((ref _subscriptions, ref extranonce, ref nonce_size)) => {
+                        self.set_extranonce(extranonce.as_str(), nonce_size)
+                    }
                     _ => Err(format!("Inconsistent stratum message: {:?}", msg).into()),
-                }
-            }
+                },
+                StratumLinePayload::StratumCommand(command) => match command {
+                    StratumCommand::SetExtranonce(SetExtranonce::SetExtranoncePlain((
+                        ref extranonce,
+                        ref nonce_size,
+                    ))) => self.set_extranonce(extranonce.as_str(), nonce_size),
+                    StratumCommand::MiningSetDifficulty((ref difficulty,)) => self.set_difficulty(difficulty),
+                    StratumCommand::MiningNotify(MiningNotify::MiningNotifyWithVersion((
+                        id,
+                        header_hash,
+                        timestamp,
+                        version,
+                    ))) => {
+                        self.block_template_ctr
+                            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| Some((v + 1) % 10_000))
+                            .unwrap();
+
+                        // todo: remove this
+                        info!("Stratum debugging: version={}, target={:x}", version, self.target_pool);
+
+                        miner
+                            .process_block(Some(PartialBlock {
+                                id,
+                                header_hash,
+                                timestamp,
+                                nonce: 0,
+                                target: self.target_pool,
+                                nonce_mask: self.nonce_mask,
+                                nonce_fixed: self.nonce_fixed,
+                                hash: None,
+                                version: version as u64,
+                            }))
+                            .await
+                    }
+                    _ => Err(format!("Unexpected stratum message: {:?}", msg).into()),
+                },
+                _ => Err(format!("Inconsistent stratum message: {:?}", msg).into()),
+            },
             StratumLine {
                 id: Some(id),
                 payload: StratumLinePayload::StratumResult { .. },

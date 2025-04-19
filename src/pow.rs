@@ -1,4 +1,4 @@
-use log::info;
+use log::{info, debug};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 use time::{macros::format_description, OffsetDateTime};
@@ -34,6 +34,7 @@ pub enum BlockSeed {
         nonce_mask: u64,
         nonce_fixed: u64,
         hash: Option<String>,
+        version: u64,
     },
 }
 
@@ -93,6 +94,8 @@ impl State {
                 header_timestamp = header.timestamp as u64;
                 nonce_mask = 0xffffffffffffffffu64;
                 nonce_fixed = 0;
+
+                debug!("GRPC new state - bits: {}, target: {:x}", header.bits, header_target);
             }
             BlockSeed::PartialBlock {
                 ref header_hash,
@@ -100,13 +103,16 @@ impl State {
                 ref target,
                 nonce_fixed: fixed,
                 nonce_mask: mask,
+                version,
                 ..
             } => {
                 pre_pow_hash = Hash::new(*header_hash);
                 header_timestamp = *timestamp;
                 header_target = *target;
                 nonce_mask = mask;
-                nonce_fixed = fixed
+                nonce_fixed = fixed;
+
+                debug!("Stratum new state - version: {}, target: {:x}", version, header_target);
             }
         }
 
@@ -138,7 +144,26 @@ impl State {
         // Hasher already contains PRE_POW_HASH || TIME || 32 zero byte padding; so only the NONCE is missing
         let hash = self.hasher.finalize_with_nonce(nonce);
         let bwt_hash = astrobwtv3::astrobwtv3_hash(&hash.to_le_bytes());
-        self.matrix.heavy_hash(Uint256::from_le_bytes(bwt_hash))
+
+        // get header version
+        let header_version = match &*self.block {
+            BlockSeed::FullBlock(block) => {
+                let version = block.header.as_ref().map(|header| header.version as u64).unwrap_or(1);
+                debug!("GRPC block version: {}", version);
+                version
+            }
+            BlockSeed::PartialBlock { version, .. } => {
+                debug!("Stratum block version: {}", version);
+                *version
+            }
+        };
+
+        debug!("Using header_version={} for hash calculation, target={:x}", header_version, self.target);
+
+        let result = self.matrix.heavy_hash(Uint256::from_le_bytes(bwt_hash), header_version);
+        debug!("Hash result: {:x}, match target? {}", result, result <= self.target);
+
+        result
     }
 
     #[inline(always)]

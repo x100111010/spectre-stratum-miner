@@ -4,15 +4,13 @@ use crate::pow::BlockSeed::{FullBlock, PartialBlock};
 use crate::proto::rpc_client::RpcClient;
 use crate::proto::spectred_message::Payload;
 use crate::proto::{
-    GetBlockTemplateRequestMessage, GetInfoRequestMessage, NotifyBlockAddedRequestMessage,
-    NotifyNewBlockTemplateRequestMessage, SpectredMessage,
+    GetBlockTemplateRequestMessage, GetInfoRequestMessage, NotifyNewBlockTemplateRequestMessage, SpectredMessage,
 };
 use crate::{miner::MinerManager, Error};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use log::{error, info, warn};
 use rand::{rng, RngCore};
-use semver::Version;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc::{self, error::SendError, Sender};
@@ -22,7 +20,6 @@ use tokio_util::sync::{PollSendError, PollSender};
 use tonic::{transport::Channel as TonicChannel, Streaming};
 
 static EXTRA_DATA: &str = concat!(env!("CARGO_PKG_VERSION"), "/", env!("PACKAGE_COMPILE_TIME"));
-static VERSION_UPDATE: &str = "0.11.15";
 type BlockHandle = JoinHandle<Result<(), PollSendError<SpectredMessage>>>;
 
 #[allow(dead_code)]
@@ -159,22 +156,12 @@ impl SpectredHandler {
             }
             Payload::GetInfoResponse(info) => {
                 info!("Spectred version: {}", info.server_version);
-                let spectred_version = Version::parse(&info.server_version)?;
-                let update_version = Version::parse(VERSION_UPDATE)?;
-                match spectred_version >= update_version {
-                    true => self.client_send(NotifyNewBlockTemplateRequestMessage {}).await?,
-                    false => self.client_send(NotifyBlockAddedRequestMessage {}).await?,
-                };
-
+                self.client_send(NotifyNewBlockTemplateRequestMessage {}).await?;
                 self.client_get_block_template().await?;
             }
             Payload::NotifyNewBlockTemplateResponse(res) => match res.error {
                 None => info!("Registered for new template notifications"),
                 Some(e) => error!("Failed registering for new template notifications: {:?}", e),
-            },
-            Payload::NotifyBlockAddedResponse(res) => match res.error {
-                None => info!("Registered for block notifications (upgrade your Spectred for better experience)"),
-                Some(e) => error!("Failed registering for block notifications: {:?}", e),
             },
             msg => info!("got unknown msg: {:?}", msg),
         }

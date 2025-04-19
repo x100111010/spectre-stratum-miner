@@ -52,6 +52,8 @@ async fn get_client(
     mine_when_not_synced: bool,
     block_template_ctr: Arc<AtomicU16>,
 ) -> Result<Box<dyn Client + 'static>, Error> {
+    let share_stats = Arc::new(ShareStats::default());
+
     if spectred_address.starts_with("stratum+tcp://") {
         let (_schema, address) = spectred_address.split_once("://").unwrap();
         Ok(StratumHandler::connect(
@@ -59,6 +61,7 @@ async fn get_client(
             mining_address.clone(),
             mine_when_not_synced,
             Some(block_template_ctr.clone()),
+            share_stats,
         )
         .await?)
     } else if spectred_address.starts_with("grpc://") {

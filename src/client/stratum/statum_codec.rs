@@ -38,6 +38,7 @@ pub(crate) struct StratumError(pub(crate) ErrorCode, pub(crate) String, #[serde(
 #[serde(untagged)]
 pub(crate) enum MiningNotify {
     MiningNotifyShort((String, [u64; 4], u64)),
+    MiningNotifyWithVersion((String, [u64; 4], u64, u16)),
     MiningNotifyLong((String, String, String, String, Vec<String>, String, String, String, bool)),
 }
 
